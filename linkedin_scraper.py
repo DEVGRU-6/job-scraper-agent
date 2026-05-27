@@ -12,11 +12,11 @@ DISCOVERY_TAB = "Discovered Jobs (API)"
 # The exact search terms you want to query on LinkedIn
 SEARCH_TERMS = ["Aviation Graduate", "Logistics Trainee", "Supply Chain Graduate"]
 
-# Locations to search (LinkedIn is very specific, use city or country names)
+# Expanded locations: Fantastic.jobs supports all of these globally!
 TARGET_LOCATIONS = [
     "Germany", "United Kingdom", "Singapore", "Australia", 
     "United Arab Emirates", "Qatar", "Japan", "Thailand", 
-    "Hong Kong", "China", "Europen Union"
+    "Hong Kong", "China"
 ]
 
 # 🛑 THE BLACKLIST: Keeps the junk out
@@ -24,7 +24,7 @@ EXCLUDED_TERMS = [
     "trade", "construction", "labour", "labor", "warehouse", 
     "driver", "operator", "technician", "mechanic", "picker", 
     "packer", "forklift", "plumber", "electrician", "retail",
-    "senior", "machinist", "cnc", "HR", "fitter", "repair", "tool maker", "toolmaker", "manager"
+    "senior", "machinist", "cnc", "repair", "tool maker", "toolmaker", "manager"
 ]
 
 def get_spreadsheet():
@@ -45,7 +45,7 @@ def apply_sleek_formatting(sheet):
         pass
 
 def fetch_linkedin_jobs(term, location):
-    """Fetches jobs using the RapidAPI wrapper."""
+    """Fetches jobs using the Fantastic.jobs RapidAPI wrapper."""
     api_key = os.environ.get("RAPIDAPI_KEY")
     api_host = os.environ.get("RAPIDAPI_HOST")
     
@@ -53,12 +53,17 @@ def fetch_linkedin_jobs(term, location):
         print("ERROR: RapidAPI credentials missing!")
         return []
 
-    # Replace the URL below with the one provided in your RapidAPI dashboard if different.
-    url = f"https://{api_host}/search"
+    # The Fantastic.jobs endpoint is usually the root path "/"
+    url = f"https://{api_host}/"
     
+    # Calculate yesterday's date in YYYY-MM-DD format to only get fresh jobs
+    yesterday_stamp = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+    
+    # Custom parameters specific to the Fantastic.jobs API syntax
     querystring = {
-        "query": f"{term} {location}",
-        "time_posted": "past_24_hours", # Only get fresh jobs!
+        "title_filter": term,
+        "location_filter": location,
+        "date_filter": yesterday_stamp 
     }
 
     headers = {
@@ -70,8 +75,9 @@ def fetch_linkedin_jobs(term, location):
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=15)
         if response.status_code == 200:
-            # Adjust '.get("data", [])' based on your specific API's JSON response
-            return response.json().get("data", []) 
+            data = response.json()
+            # Handle list or nested dict safely depending on exact endpoint return
+            return data.get("data", data) if isinstance(data, dict) else data
         else:
             print(f"  -> API Error {response.status_code}: {response.text}")
             return []
@@ -105,13 +111,18 @@ def main():
             jobs = fetch_linkedin_jobs(term, location)
             
             for job in jobs:
-                # Adjust these keys based on what your specific RapidAPI returns
-                job_url = job.get("job_url", job.get("url", ""))
+                # Catch various URL keys (url, job_url, external_apply_url)
+                job_url = job.get("url", job.get("job_url", job.get("external_apply_url", "")))
                 
                 if job_url and job_url not in existing_links:
                     title = job.get("title", "N/A")
-                    description = job.get("description", "") # Extract description for language check
-                    company = job.get("company", {}).get("name", job.get("company_name", "Unknown"))
+                    # Fantastic.jobs often provides 'text' for description
+                    description = job.get("description", job.get("text", "")) 
+                    
+                    # Company name logic safely handles string or nested dictionary
+                    comp_data = job.get("company", "Unknown")
+                    company = comp_data.get("name", "Unknown") if isinstance(comp_data, dict) else comp_data
+                    
                     job_location = job.get("location", "Unknown")
                     
                     # 1. Blacklist Word Check
@@ -123,16 +134,14 @@ def main():
                     # 2. English Language Check
                     text_to_check = f"{title} {description}"
                     try:
-                        # If the language detected is NOT english ('en'), block it
                         if detect(text_to_check) != 'en':
                             language_blocked += 1
                             continue
                     except LangDetectException:
-                        # If the detector crashes (usually due to a blank description), skip it
                         language_blocked += 1
                         continue
                     
-                    # If it passes all filters, add it to the list!
+                    # Pass filters -> Add to sheet
                     rows_to_append.append([
                         title,
                         company,
@@ -145,8 +154,8 @@ def main():
                     existing_links.add(job_url)
                     total_added += 1
 
-            # Pause briefly to avoid hitting the API rate limit
-            time.sleep(1.5)
+            # Pause for 2 seconds to avoid hitting RapidAPI's requests-per-second limit
+            time.sleep(2)
 
     if rows_to_append:
         print(f"\nPushing {total_added} new LinkedIn jobs to the Google Sheet...")
