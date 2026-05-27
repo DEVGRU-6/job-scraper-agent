@@ -14,12 +14,47 @@ SEARCH_TERMS = ["Aviation Graduate", "Logistics Trainee", "Supply Chain Graduate
 # Adzuna Country Codes (gb=UK, de=Germany, fr=France, nl=Netherlands, be=Belgium)
 TARGET_COUNTRIES = ["gb", "de", "nl", "be"] 
 
+# 🛑 THE BLACKLIST: Any job containing these words will be deleted
+EXCLUDED_TERMS = [
+    "trade", "construction", "labour", "labor", "warehouse", 
+    "driver", "operator", "technician", "mechanic", "picker", 
+    "packer", "forklift", "plumber", "electrician"
+]
+
 def get_spreadsheet():
     """Connects securely to your Google Sheet master file."""
     print(f"Connecting to Google Cloud to access '{GOOGLE_SHEET_NAME}'...")
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
     client = gspread.service_account_from_dict(creds_dict)
     return client.open(GOOGLE_SHEET_NAME)
+
+def apply_sleek_formatting(sheet):
+    """Automatically styles the Google Sheet to look professional and organized."""
+    try:
+        print("  -> Applying sleek formatting to the sheet...")
+        # Freeze the top row so headers stay visible when scrolling
+        sheet.freeze(rows=1)
+        
+        # Apply dark background, bold white text, and center alignment to headers (A1 to G1)
+        sheet.format('A1:G1', {
+            "backgroundColor": {
+                "red": 0.2,
+                "green": 0.2,
+                "blue": 0.22
+            },
+            "horizontalAlignment": "CENTER",
+            "textFormat": {
+                "foregroundColor": {
+                    "red": 1.0,
+                    "green": 1.0,
+                    "blue": 1.0
+                },
+                "fontSize": 11,
+                "bold": True
+            }
+        })
+    except Exception as e:
+        print(f"  -> Minor formatting error (safe to ignore): {e}")
 
 def fetch_jobs_from_adzuna(country, search_term):
     """Fetches jobs directly from the Adzuna JSON API."""
@@ -69,12 +104,15 @@ def main():
     if not discovery_sheet.get_all_values():
         discovery_sheet.append_row(["Job Title", "Company", "Location", "Category", "Status", "Link", "Date Discovered"])
 
+    # Always apply formatting to ensure it looks good!
+    apply_sleek_formatting(discovery_sheet)
+
     # Load existing URLs to a set so we don't log the same job twice
-    # Adzuna links are long, so URL matching is the safest way to prevent duplicates
     existing_links = set(discovery_sheet.col_values(6)) 
     
     rows_to_append = []
     total_added = 0
+    total_blocked = 0
 
     for country in TARGET_COUNTRIES:
         print(f"\n--- Searching Country: {country.upper()} ---")
@@ -84,12 +122,24 @@ def main():
             for job in jobs:
                 job_url = job.get("redirect_url", "")
                 
+                # Check for duplicates
                 if job_url and job_url not in existing_links:
                     title = job.get("title", "N/A").replace("<strong>", "").replace("</strong>", "")
                     company = job.get("company", {}).get("display_name", "Unknown")
                     location = job.get("location", {}).get("display_name", "Unknown")
                     category = job.get("category", {}).get("label", "N/A")
                     
+                    # --- THE FILTER CHECK ---
+                    title_lower = title.lower()
+                    category_lower = category.lower()
+                    
+                    # If any blocked word is in the title OR category, skip it immediately
+                    if any(bad_word in title_lower for bad_word in EXCLUDED_TERMS) or \
+                       any(bad_word in category_lower for bad_word in EXCLUDED_TERMS):
+                        total_blocked += 1
+                        continue # Throw it in the trash
+                    
+                    # If it passes the filter, add it to the sheet!
                     rows_to_append.append([
                         title,
                         company,
@@ -109,7 +159,7 @@ def main():
     else:
         print("\nNo new unique jobs found today.")
         
-    print(f"Done! Added {total_added} leads to {DISCOVERY_TAB}.")
+    print(f"Done! Added {total_added} high-quality leads. Blocked {total_blocked} irrelevant jobs.")
 
 if __name__ == "__main__":
     main()
