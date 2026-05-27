@@ -20,7 +20,7 @@ EXCLUDED_TERMS = [
     "trade", "construction", "labour", "labor", "warehouse", 
     "driver", "operator", "technician", "mechanic", "picker", 
     "packer", "forklift", "plumber", "electrician", "retail",
-    "senior", "machinist", "cnc", "repair", "tool maker", "toolmaker", "manager"
+    "senior", "machinist", "cnc", "HR", "fitter", "repair", "tool maker", "toolmaker", "manager"
 ]
 
 def get_spreadsheet():
