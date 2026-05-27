@@ -3,55 +3,54 @@ import json
 import time
 import sys
 import requests
+import csv
 from bs4 import BeautifulSoup
-import gspread
 from google.genai import Client
 
 sys.stdout.reconfigure(encoding='utf-8')
 
 # --- CONFIGURATION ---
-GOOGLE_SHEET_NAME = "🧧Bub Jobs Command Center🍀"
-OVERVIEW_TAB = "Overview"
+BASE_FILE_PREFIX = "🧧Bub Jobs Command Center🍀"
+OVERVIEW_FILE = f"{BASE_FILE_PREFIX} - Overview.csv"
 
 # Initialize Gemini Client
+# Ensure your environment variable GEMINI_API_KEY is set
 ai_client = Client(api_key=os.environ["GEMINI_API_KEY"])
 
-def get_spreadsheet():
-    """Connects securely to your Google Sheet master file."""
-    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-    client = gspread.service_account_from_dict(creds_dict)
-    return client.open(GOOGLE_SHEET_NAME)
-
-def get_target_companies(doc):
-    """Reads your Overview tab to dynamically discover companies and links."""
-    print("Reading master directory from 'Overview' tab...")
-    try:
-        overview = doc.worksheet(OVERVIEW_TAB)
-    except Exception:
-        print(f"Error: Could not find a tab named '{OVERVIEW_TAB}'. Check layout.")
-        return []
-        
-    # Get all rows (Company in Col A, Links in Col C)
-    all_rows = overview.get_all_values()
+def get_target_companies():
+    """Reads the local Overview CSV to dynamically discover companies and links."""
+    print(f"Reading master directory from '{OVERVIEW_FILE}'...")
     companies_list = []
     
-    # Skip header rows to find where the companies start (Row 10+ based on image)
-    for row in all_rows:
-        if len(row) >= 3:
-            company_name = row[0].strip()
-            career_link = row[2].strip()
+    if not os.path.exists(OVERVIEW_FILE):
+        print(f"Error: Could not find the file '{OVERVIEW_FILE}'. Please ensure it's in the same directory.")
+        return companies_list
+
+    try:
+        with open(OVERVIEW_FILE, mode='r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            all_rows = list(reader)
             
-            # Only track if it has a valid name and a working http link
-            if company_name and career_link.startswith("http"):
-                companies_list.append({
-                    "name": company_name,
-                    "url": career_link
-                })
+            for row in all_rows:
+                # Need at least 3 columns to extract Company (Col A) and Link (Col C)
+                if len(row) >= 3:
+                    company_name = row[0].strip()
+                    career_link = row[2].strip()
+                    
+                    # Only track if it has a valid name and a working http link
+                    if company_name and career_link.startswith("http"):
+                        companies_list.append({
+                            "name": company_name,
+                            "url": career_link
+                        })
+    except Exception as e:
+        print(f"Error reading {OVERVIEW_FILE}: {e}")
+
     print(f"Found {len(companies_list)} target companies with career links to scan.")
     return companies_list
 
 def scrape_career_site(url):
-    """Fetches text contents from a target career page safely in the cloud."""
+    """Fetches text contents from a target career page safely."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         response = requests.get(url, headers=headers, timeout=15)
@@ -90,13 +89,15 @@ def analyze_jobs_with_ai(raw_html_text, company_name):
         )
         clean_text = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(clean_text)
-    except:
+    except Exception as e:
+        print(f"AI parsing error: {e}")
         return []
 
 def main():
-    doc = get_spreadsheet()
-    targets = get_target_companies(doc)
-    
+    targets = get_target_companies()
+    if not targets:
+        return
+        
     today_stamp = time.strftime("%Y-%m-%d")
     
     # Process the top 5 companies per run to avoid rate limits
@@ -117,33 +118,46 @@ def main():
         if not found_jobs:
             continue
             
-        # Get or dynamically build the company-specific tab
-        try:
-            target_sheet = doc.worksheet(company)
-        except gspread.exceptions.WorksheetNotFound:
-            print(f"Creating a new dedicated tab for: '{company}'")
-            target_sheet = doc.add_worksheet(title=company, rows="1000", cols="6")
+        # Sanitize company name to safely create file paths (avoid slashes etc.)
+        safe_company_name = company.replace('/', '_').replace('\\', '_')
+        target_csv_file = f"{BASE_FILE_PREFIX} - {safe_company_name}.csv"
             
-        # Initialize headers if the company sheet is fresh/empty
-        if not target_sheet.get_all_values():
-            target_sheet.append_row(["Job Title", "Location", "Type", "Application Link", "Deadline", "Scraped Date"])
-            
-        added = 0
-        existing_titles = target_sheet.col_values(1) # Read Column A to avoid duplicate lines
+        # Read existing titles to avoid duplication
+        existing_titles = []
+        file_exists = os.path.exists(target_csv_file)
         
-        for job in found_jobs:
-            title = job.get("Title", "N/A")
-            if title not in existing_titles:
-                target_sheet.append_row([
-                    title,
-                    job.get("Location", "N/A"),
-                    job.get("Type", "N/A"),
-                    job.get("Link", url), # Use master portal url if deep job link is missing
-                    job.get("Deadline", "Not Listed"),
-                    today_stamp
-                ])
-                added += 1
-                print(f" -> Logged: '{title}' into tab '{company}'")
+        if file_exists:
+            with open(target_csv_file, mode='r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if row:  # skip empty lines
+                        existing_titles.append(row[0]) # Title is in Column A
+        else:
+            print(f"Creating a new dedicated CSV for: '{company}'")
+
+        added = 0
+        
+        # Append to the CSV
+        with open(target_csv_file, mode='a', encoding='utf-8', newline='') as f:
+            writer = csv.writer(f)
+            
+            # Write headers if the file is brand new
+            if not file_exists or not existing_titles:
+                writer.writerow(["Job Title", "Location", "Type", "Application Link", "Deadline", "Scraped Date"])
+                
+            for job in found_jobs:
+                title = job.get("Title", "N/A")
+                if title not in existing_titles:
+                    writer.writerow([
+                        title,
+                        job.get("Location", "N/A"),
+                        job.get("Type", "N/A"),
+                        job.get("Link", url), # Use master portal url if deep job link is missing
+                        job.get("Deadline", "Not Listed"),
+                        today_stamp
+                    ])
+                    added += 1
+                    print(f" -> Logged: '{title}' into '{target_csv_file}'")
                 
         print(f"Completed {company} updates. Added {added} new rows.")
 
