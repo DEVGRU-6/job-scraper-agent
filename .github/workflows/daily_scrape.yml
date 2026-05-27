@@ -39,3 +39,11 @@ jobs:
         ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       run: python api_scraper.py
+
+# 👇 STEP 5: RUNS THE LINKEDIN RAPID-API SCRAPER 👇
+    - name: Run LinkedIn Aggregator (RapidAPI)
+      env:
+        RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        RAPIDAPI_HOST: ${{ secrets.RAPIDAPI_HOST }}
+        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      run: python linkedin_scraper.py
