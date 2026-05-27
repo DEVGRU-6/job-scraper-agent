@@ -3,6 +3,7 @@ import json
 import time
 import requests
 import gspread
+from langdetect import detect, LangDetectException
 
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "🧧Bub Jobs Command Center🍀"
@@ -48,7 +49,6 @@ def fetch_linkedin_jobs(term, location):
         print("ERROR: RapidAPI credentials missing!")
         return []
 
-    # NOTE: The exact endpoint URL might change depending on which API you chose on RapidAPI.
     # Replace the URL below with the one provided in your RapidAPI dashboard if different.
     url = f"https://{api_host}/search"
     
@@ -66,7 +66,6 @@ def fetch_linkedin_jobs(term, location):
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=15)
         if response.status_code == 200:
-            # Different APIs might nest the data differently (e.g., data['data'] or data['jobs'])
             # Adjust '.get("data", [])' based on your specific API's JSON response
             return response.json().get("data", []) 
         else:
@@ -94,6 +93,7 @@ def main():
     rows_to_append = []
     total_added = 0
     total_blocked = 0
+    language_blocked = 0
 
     for location in TARGET_LOCATIONS:
         print(f"\n--- Searching Location: {location.upper()} ---")
@@ -106,20 +106,34 @@ def main():
                 
                 if job_url and job_url not in existing_links:
                     title = job.get("title", "N/A")
+                    description = job.get("description", "") # Extract description for language check
                     company = job.get("company", {}).get("name", job.get("company_name", "Unknown"))
                     job_location = job.get("location", "Unknown")
                     
+                    # 1. Blacklist Word Check
                     title_lower = title.lower()
-                    
                     if any(bad_word in title_lower for bad_word in EXCLUDED_TERMS):
                         total_blocked += 1
                         continue 
                     
+                    # 2. English Language Check
+                    text_to_check = f"{title} {description}"
+                    try:
+                        # If the language detected is NOT english ('en'), block it
+                        if detect(text_to_check) != 'en':
+                            language_blocked += 1
+                            continue
+                    except LangDetectException:
+                        # If the detector crashes (usually due to a blank description), skip it
+                        language_blocked += 1
+                        continue
+                    
+                    # If it passes all filters, add it to the list!
                     rows_to_append.append([
                         title,
                         company,
                         job_location,
-                        "LinkedIn API", # Category tag so you know where it came from
+                        "LinkedIn API", 
                         "Not applied yet",
                         job_url,
                         today_stamp
@@ -136,7 +150,7 @@ def main():
     else:
         print("\nNo new unique LinkedIn jobs found today.")
         
-    print(f"Done! Added {total_added} high-quality leads. Blocked {total_blocked} irrelevant jobs.")
+    print(f"Done! Added {total_added} leads. Blocked {total_blocked} irrelevant jobs and {language_blocked} non-English jobs.")
 
 if __name__ == "__main__":
     main()
