@@ -14,11 +14,11 @@ SEARCH_TERMS = ["Aviation Graduate", "Logistics Trainee", "Supply Chain Graduate
 # Adzuna Country Codes (gb=UK, de=Germany, fr=France, nl=Netherlands, be=Belgium)
 TARGET_COUNTRIES = ["gb", "de", "nl", "be"] 
 
-# 🛑 THE BLACKLIST: Any job containing these words will be deleted
+# 🛑 THE BLACKLIST: Any job containing these words will be immediately skipped
 EXCLUDED_TERMS = [
     "trade", "construction", "labour", "labor", "warehouse", 
     "driver", "operator", "technician", "mechanic", "picker", 
-    "packer", "forklift", "plumber", "electrician"
+    "packer", "forklift", "plumber", "electrician", "retail"
 ]
 
 def get_spreadsheet():
@@ -32,26 +32,12 @@ def apply_sleek_formatting(sheet):
     """Automatically styles the Google Sheet to look professional and organized."""
     try:
         print("  -> Applying sleek formatting to the sheet...")
-        # Freeze the top row so headers stay visible when scrolling
         sheet.freeze(rows=1)
-        
-        # Apply dark background, bold white text, and center alignment to headers (A1 to G1)
+        # Apply dark background, bold white text, and center alignment to headers
         sheet.format('A1:G1', {
-            "backgroundColor": {
-                "red": 0.2,
-                "green": 0.2,
-                "blue": 0.22
-            },
+            "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.22},
             "horizontalAlignment": "CENTER",
-            "textFormat": {
-                "foregroundColor": {
-                    "red": 1.0,
-                    "green": 1.0,
-                    "blue": 1.0
-                },
-                "fontSize": 11,
-                "bold": True
-            }
+            "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "fontSize": 11, "bold": True}
         })
     except Exception as e:
         print(f"  -> Minor formatting error (safe to ignore): {e}")
@@ -65,9 +51,7 @@ def fetch_jobs_from_adzuna(country, search_term):
         print("ERROR: Adzuna API credentials missing!")
         return []
 
-    # API Endpoint (Searching the 1st page, up to 50 results per query)
     url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
-    
     params = {
         "app_id": app_id,
         "app_key": app_key,
@@ -80,13 +64,9 @@ def fetch_jobs_from_adzuna(country, search_term):
     try:
         response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            return data.get("results", [])
-        else:
-            print(f"  -> API Error: {response.status_code}")
-            return []
-    except Exception as e:
-        print(f"  -> Request failed: {e}")
+            return response.json().get("results", [])
+        return []
+    except Exception:
         return []
 
 def main():
@@ -97,17 +77,16 @@ def main():
     try:
         discovery_sheet = doc.worksheet(DISCOVERY_TAB)
     except gspread.exceptions.WorksheetNotFound:
-        print(f"Creating new tab: '{DISCOVERY_TAB}'")
         discovery_sheet = doc.add_worksheet(title=DISCOVERY_TAB, rows="1000", cols="7")
         
     # Set headers if empty
     if not discovery_sheet.get_all_values():
         discovery_sheet.append_row(["Job Title", "Company", "Location", "Category", "Status", "Link", "Date Discovered"])
 
-    # Always apply formatting to ensure it looks good!
+    # Always ensure the formatting is applied
     apply_sleek_formatting(discovery_sheet)
 
-    # Load existing URLs to a set so we don't log the same job twice
+    # Load existing URLs from Column F (Index 6) to prevent duplicates
     existing_links = set(discovery_sheet.col_values(6)) 
     
     rows_to_append = []
@@ -137,9 +116,9 @@ def main():
                     if any(bad_word in title_lower for bad_word in EXCLUDED_TERMS) or \
                        any(bad_word in category_lower for bad_word in EXCLUDED_TERMS):
                         total_blocked += 1
-                        continue # Throw it in the trash
+                        continue 
                     
-                    # If it passes the filter, add it to the sheet!
+                    # If it passes the filter, add it to our append list
                     rows_to_append.append([
                         title,
                         company,
@@ -152,9 +131,9 @@ def main():
                     existing_links.add(job_url)
                     total_added += 1
 
-    # Batch append to save API quota
+    # ✨ THIS IS THE MAGIC LINE that automatically adds to the bottom ✨
     if rows_to_append:
-        print(f"\nPushing {total_added} new discovered jobs to Google Sheets...")
+        print(f"\nPushing {total_added} new discovered jobs to the bottom of the Google Sheet...")
         discovery_sheet.append_rows(rows_to_append)
     else:
         print("\nNo new unique jobs found today.")
