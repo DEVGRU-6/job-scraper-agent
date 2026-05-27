@@ -47,3 +47,7 @@ jobs:
         RAPIDAPI_HOST: ${{ secrets.RAPIDAPI_HOST }}
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       run: python linkedin_scraper.py
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install cloudscraper requests beautifulsoup4 google-genai gspread langdetect
