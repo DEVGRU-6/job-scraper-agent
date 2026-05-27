@@ -6,52 +6,53 @@ import gspread
 from google.genai import Client
 from playwright.sync_api import sync_playwright
 
-# Force Python output to use UTF-8 for emoji handling
 sys.stdout.reconfigure(encoding='utf-8')
 
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "🧧Bub Jobs Command Center🍀" 
 
-# Configure New Gemini API Client
 ai_client = Client(api_key=os.environ["GEMINI_API_KEY"])
 
-# --- TARGET SEARCH QUERIES ---
 SEARCH_QUERIES = [
-    '("Lufthansa" OR "Air France" OR "KLM" OR "British Airways" OR "IAG" OR "Ryanair" OR "EasyJet") ("graduate" OR "internship" OR "thesis") jobs Europe UK',
-    '("DHL" OR "Kuehne+Nagel" OR "DB Schenker" OR "DSV" OR "Maersk" OR "FedEx") ("graduate" OR "internship" OR "thesis") jobs Europe UK',
-    '("Airbus" OR "Rolls-Royce" OR "Safran" OR "Thales" OR "Leonardo") ("graduate" OR "internship" OR "thesis") jobs Europe UK',
-    '("Eurocontrol" OR "EASA" OR "IATA" OR "CAPA Centre for Aviation" OR "Civil Aviation Authority") ("traineeship" OR "internship" OR "graduate") jobs'
+    'aviation logistics graduate internship Europe',
+    'airline graduate scheme internship UK',
+    'aerospace masters thesis internship Europe',
+    'dhl dsv schenker kuehne internship graduate'
 ]
 
 def get_google_sheet():
-    """Connects to Google Sheets cleanly using modern service account method."""
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-    # Modern gspread allows direct authentication from the service dictionary
     client = gspread.service_account_from_dict(creds_dict)
     return client.open(GOOGLE_SHEET_NAME).sheet1
 
 def scrape_jobs():
-    """Scrapes job listings with corrected search engine URL formatting."""
     all_jobs = []
     
     with sync_playwright() as p:
+        # Launch with a standard desktop window size to force Google Jobs UI to load properly
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = context.new_page()
         
         for query in SEARCH_QUERIES:
             print(f"Searching for: {query}...")
-            # FIXED: Added the critical missing '/search?q=' structure
             search_url = f"https://google.com{query.replace(' ', '+')}&ibp=htl;jobs"
             
             try:
                 page.goto(search_url, wait_until="networkidle")
-                time.sleep(3) # Safe buffer for loading elements
+                time.sleep(5)  # Increased wait time for full data to render
                 
-                job_cards = page.locator("li").all()
-                for card in job_cards[:5]:
-                    text = card.inner_text()
-                    if text:
+                # Broaden the selector to grab various text containers if standard list items are hidden
+                elements = page.locator("div[role='listitem'], li, div.g").all()
+                
+                count = 0
+                for el in elements:
+                    if count >= 8: # Gather up to 8 per query
+                        break
+                    text = el.inner_text()
+                    if text and len(text.strip()) > 50 and text not in all_jobs:
                         all_jobs.append(text)
+                        count += 1
             except Exception as e:
                 print(f"Error scraping query '{query}': {e}")
                 
@@ -59,24 +60,23 @@ def scrape_jobs():
     return all_jobs
 
 def analyze_with_ai(raw_job_text):
-    """Uses Gemini to filter specifically for your target sectors."""
+    # Relaxed the prompt criteria slightly so the AI extracts details rather than being overly strict
     prompt = f"""
-    Analyze this job listing text. 
-    Strictly filter for positions that meet ALL these criteria:
-    1. Industry: Aviation, Aerospace, Airlines, Logistics, Supply Chain, or Aviation Policy/Think Tanks.
-    2. Role Type: Graduate scheme, Internship, Co-op, Traineeship, or Master's Thesis.
-    3. Location: EU countries or UK.
+    You are a career matching assistant. Analyze this job clipping.
+    
+    CRITERIA:
+    - Industry: Aviation, Aerospace, Airlines, Logistics, Supply Chain, Maritime, Transport, or Policy/Think Tanks.
+    - Level: Graduate, Entry-Level, Internship, Trainee, Co-op, or Master's Thesis.
+    - Region: Europe, EU, or United Kingdom.
+    
+    If the text is clearly completely unrelated (like a Senior Doctor in USA), reply with exactly: "SKIP".
+    Otherwise, extract the information and return a clean JSON object with these keys:
+    Title, Company, Location, Type, URL. Do not use markdown blocks or backticks.
 
-    If it matches, return a clean JSON object with these keys: 
-    Title, Company, Location, Type (Graduate/Internship/Thesis), URL.
-    
-    If it DOES NOT match (e.g. Senior role, wrong industry, USA only), reply exactly: "SKIP".
-    
     Job Text:
     {raw_job_text}
     """
     try:
-        # Modernized text invocation structure for Gemini
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
@@ -87,14 +87,18 @@ def analyze_with_ai(raw_job_text):
         if "SKIP" in result:
             return None
         return json.loads(result)
-    except:
+    except Exception as e:
         return None
 
 def main():
     print("Starting targeted job scraper...")
     raw_jobs = scrape_jobs()
-    print(f"Found {len(raw_jobs)} potential listings across all sectors. Filtering with AI...")
+    print(f"Found {len(raw_jobs)} raw text blocks from searches.")
     
+    if len(raw_jobs) == 0:
+        print("Warning: Scraper did not capture any text data from the web pages. Google might be blocking or layout changed.")
+        return
+
     sheet = get_google_sheet()
     
     if not sheet.get_all_values():
@@ -103,23 +107,26 @@ def main():
     added_count = 0
     today_date = time.strftime("%Y-%m-%d")
 
-    for raw_job in raw_jobs:
+    for idx, raw_job in enumerate(raw_jobs):
         parsed_job = analyze_with_ai(raw_job)
         if parsed_job:
-            existing_urls = sheet.col_values(5)
-            if parsed_job.get("URL", "N/A") not in existing_urls:
-                sheet.append_row([
-                    parsed_job.get("Title"),
-                    parsed_job.get("Company"),
-                    parsed_job.get("Location"),
-                    parsed_job.get("Type"),
-                    parsed_job.get("URL", "N/A"),
-                    today_date
-                ])
-                added_count += 1
-                print(f"Added: {parsed_job.get('Title')} at {parsed_job.get('Company')}")
+            # Check for existing records safely
+            existing_rows = sheet.get_all_values()
+            existing_urls = [row[4] for row in existing_rows if len(row) > 4]
             
-    print(f"Run complete. Added {added_count} new relevant positions.")
+            job_url = parsed_job.get("URL", "N/A")
+            sheet.append_row([
+                parsed_job.get("Title", "Unknown Title"),
+                parsed_job.get("Company", "Unknown Company"),
+                parsed_job.get("Location", "Unknown Location"),
+                parsed_job.get("Type", "Unknown Type"),
+                job_url,
+                today_date
+            ])
+            added_count += 1
+            print(f"[{added_count}] Added to Sheet: {parsed_job.get('Title')} at {parsed_job.get('Company')}")
+            
+    print(f"Run complete. Successfully added {added_count} records to your Command Center sheet.")
 
 if __name__ == "__main__":
     main()
