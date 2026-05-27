@@ -3,67 +3,81 @@ import json
 import time
 import sys
 import requests
-import csv
+import gspread
 from bs4 import BeautifulSoup
 from google.genai import Client
 
 sys.stdout.reconfigure(encoding='utf-8')
 
 # --- CONFIGURATION ---
-BASE_FILE_PREFIX = "🧧Bub Jobs Command Center🍀"
-OVERVIEW_FILE = f"{BASE_FILE_PREFIX} - Overview.csv"
+GOOGLE_SHEET_NAME = "🧧Bub Jobs Command Center🍀"
+OVERVIEW_TAB = "Overview"
 
 # Initialize Gemini Client
-# Ensure your environment variable GEMINI_API_KEY is set
-ai_client = Client(api_key=os.environ["GEMINI_API_KEY"])
+ai_client = Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
 
-def get_target_companies():
-    """Reads the local Overview CSV to dynamically discover companies and links."""
-    print(f"Reading master directory from '{OVERVIEW_FILE}'...")
+def get_spreadsheet():
+    """Connects securely to your Google Sheet master file in the cloud."""
+    print(f"Connecting to Google Cloud to access '{GOOGLE_SHEET_NAME}'...")
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if not creds_json:
+        raise ValueError("CRITICAL: GOOGLE_CREDENTIALS environment variable is missing.")
+        
+    creds_dict = json.loads(creds_json)
+    client = gspread.service_account_from_dict(creds_dict)
+    return client.open(GOOGLE_SHEET_NAME)
+
+def get_target_companies(doc):
+    """Reads your Overview tab to dynamically discover companies and links."""
+    print(f"Reading master directory from '{OVERVIEW_TAB}' tab...")
+    try:
+        overview = doc.worksheet(OVERVIEW_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"Error: Could not find a tab named '{OVERVIEW_TAB}'. Check layout.")
+        return []
+        
+    all_rows = overview.get_all_values()
     companies_list = []
     
-    if not os.path.exists(OVERVIEW_FILE):
-        print(f"Error: Could not find the file '{OVERVIEW_FILE}'. Please ensure it's in the same directory.")
-        return companies_list
-
-    try:
-        with open(OVERVIEW_FILE, mode='r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            all_rows = list(reader)
+    # Skip header rows
+    for row in all_rows:
+        # Assuming Company is in Col A [0] and Links in Col C [2] based on your setup
+        if len(row) >= 3:
+            company_name = row[0].strip()
+            career_link = row[2].strip()
             
-            for row in all_rows:
-                # Need at least 3 columns to extract Company (Col A) and Link (Col C)
-                if len(row) >= 3:
-                    company_name = row[0].strip()
-                    career_link = row[2].strip()
-                    
-                    # Only track if it has a valid name and a working http link
-                    if company_name and career_link.startswith("http"):
-                        companies_list.append({
-                            "name": company_name,
-                            "url": career_link
-                        })
-    except Exception as e:
-        print(f"Error reading {OVERVIEW_FILE}: {e}")
-
+            if company_name and career_link.startswith("http"):
+                companies_list.append({
+                    "name": company_name,
+                    "url": career_link
+                })
+                
     print(f"Found {len(companies_list)} target companies with career links to scan.")
     return companies_list
 
 def scrape_career_site(url):
-    """Fetches text contents from a target career page safely."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    """Fetches text contents from a target career page safely in the cloud."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     try:
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            # Extract plain text blocks from the page structure
+            # Extract plain text, limit to 4000 chars to save Gemini tokens
             return soup.get_text(separator=' ', strip=True)[:4000]
-    except Exception as e:
-        print(f"Skipping network read for {url}: {e}")
+        else:
+            print(f"  -> Warning: Received status code {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"  -> Skipping network read for {url}: {e}")
     return ""
 
 def analyze_jobs_with_ai(raw_html_text, company_name):
     """Uses Gemini to filter text for aviation/logistics roles for the company."""
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("  -> ERROR: GEMINI_API_KEY environment variable is missing.")
+        return []
+
     prompt = f"""
     Analyze this web page text pulled from the career site of {company_name}.
     Identify specific job vacancies that meet ALL these criteria:
@@ -90,14 +104,17 @@ def analyze_jobs_with_ai(raw_html_text, company_name):
         clean_text = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(clean_text)
     except Exception as e:
-        print(f"AI parsing error: {e}")
+        print(f"  -> AI parsing error: {e}")
         return []
 
 def main():
-    targets = get_target_companies()
-    if not targets:
+    try:
+        doc = get_spreadsheet()
+    except Exception as e:
+        print(f"Failed to connect to Google Sheets: {e}")
         return
-        
+
+    targets = get_target_companies(doc)
     today_stamp = time.strftime("%Y-%m-%d")
     
     # Process the top 5 companies per run to avoid rate limits
@@ -105,61 +122,60 @@ def main():
         company = target["name"]
         url = target["url"]
         
-        print(f"\nProcessing career site for: {company}...")
+        print(f"\n[{company}] Processing career site...")
         web_text = scrape_career_site(url)
         
         if not web_text:
-            print(f"Could not read data from portal for {company}. Moving on.")
+            print("  -> Could not read data from portal. Moving on.")
             continue
             
         found_jobs = analyze_jobs_with_ai(web_text, company)
-        print(f"AI evaluated page text. Found {len(found_jobs)} matching postings for {company}.")
+        print(f"  -> AI evaluated text. Found {len(found_jobs)} matching postings.")
         
         if not found_jobs:
             continue
             
-        # Sanitize company name to safely create file paths (avoid slashes etc.)
-        safe_company_name = company.replace('/', '_').replace('\\', '_')
-        target_csv_file = f"{BASE_FILE_PREFIX} - {safe_company_name}.csv"
+        # Get or dynamically build the company-specific tab in Google Sheets
+        try:
+            target_sheet = doc.worksheet(company)
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"  -> Creating a new dedicated tab for: '{company}'")
+            target_sheet = doc.add_worksheet(title=company, rows="1000", cols="7")
             
-        # Read existing titles to avoid duplication
-        existing_titles = []
-        file_exists = os.path.exists(target_csv_file)
-        
-        if file_exists:
-            with open(target_csv_file, mode='r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if row:  # skip empty lines
-                        existing_titles.append(row[0]) # Title is in Column A
-        else:
-            print(f"Creating a new dedicated CSV for: '{company}'")
-
+        # Initialize headers to match your existing tracking style
+        if not target_sheet.get_all_values():
+            target_sheet.append_row(["Company / Role", "Deadline", "Location", "Type", "Status", "Link", "Notes"])
+            
         added = 0
+        # Optimization: Fetch Column A and convert to a SET for blazing fast duplicate checking
+        existing_titles = set(target_sheet.col_values(1)) 
         
-        # Append to the CSV
-        with open(target_csv_file, mode='a', encoding='utf-8', newline='') as f:
-            writer = csv.writer(f)
+        rows_to_append = []
+        
+        for job in found_jobs:
+            title = job.get("Title", "N/A").strip()
             
-            # Write headers if the file is brand new
-            if not file_exists or not existing_titles:
-                writer.writerow(["Job Title", "Location", "Type", "Application Link", "Deadline", "Scraped Date"])
+            # Check the fast set instead of searching a list
+            if title and title not in existing_titles:
+                rows_to_append.append([
+                    title,
+                    job.get("Deadline", "Not Listed"),
+                    job.get("Location", "N/A"),
+                    job.get("Type", "N/A"),
+                    "Not applied yet", 
+                    job.get("Link", url),
+                    f"Scraped Date: {today_stamp}"
+                ])
+                # Add to set to prevent duplicates within the same run
+                existing_titles.add(title)
+                added += 1
+                print(f"  -> Preparing to log: '{title}'")
                 
-            for job in found_jobs:
-                title = job.get("Title", "N/A")
-                if title not in existing_titles:
-                    writer.writerow([
-                        title,
-                        job.get("Location", "N/A"),
-                        job.get("Type", "N/A"),
-                        job.get("Link", url), # Use master portal url if deep job link is missing
-                        job.get("Deadline", "Not Listed"),
-                        today_stamp
-                    ])
-                    added += 1
-                    print(f" -> Logged: '{title}' into '{target_csv_file}'")
+        # Batch append rows to save Google Sheets API quota
+        if rows_to_append:
+            target_sheet.append_rows(rows_to_append)
                 
-        print(f"Completed {company} updates. Added {added} new rows.")
+        print(f"[{company}] Completed updates. Added {added} new rows to Google Sheets.")
 
 if __name__ == "__main__":
     main()
