@@ -13,7 +13,11 @@ DISCOVERY_TAB = "Discovered Jobs (API)"
 SEARCH_TERMS = ["Aviation Graduate", "Logistics Trainee", "Supply Chain Graduate"]
 
 # Locations to search (LinkedIn is very specific, use city or country names)
-TARGET_LOCATIONS = ["Germany", "United Kingdom", "Singapore", "Australia"]
+TARGET_LOCATIONS = [
+    "Germany", "United Kingdom", "Singapore", "Australia", 
+    "United Arab Emirates", "Qatar", "Japan", "Thailand", 
+    "Hong Kong", "China", "Europen Union"
+]
 
 # 🛑 THE BLACKLIST: Keeps the junk out
 EXCLUDED_TERMS = [
