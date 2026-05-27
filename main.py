@@ -2,7 +2,7 @@ import os
 import json
 import time
 import sys
-import requests
+import cloudscraper
 import gspread
 from bs4 import BeautifulSoup
 from google.genai import Client
@@ -41,7 +41,7 @@ def get_target_companies(doc):
     
     # Skip header rows
     for row in all_rows:
-        # Assuming Company is in Col A [0] and Links in Col C [2] based on your setup
+        # Assuming Company is in Col A [0] and Links in Col C [2]
         if len(row) >= 3:
             company_name = row[0].strip()
             career_link = row[2].strip()
@@ -56,26 +56,42 @@ def get_target_companies(doc):
     return companies_list
 
 def scrape_career_site(url):
-    """Fetches text contents from a target career page safely in the cloud."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    """Fetches text contents from a target career page using Cloudscraper to bypass firewalls."""
+    # Create a scraper that mimics a real Chrome browser on Windows
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        # Increased timeout to 20 seconds to give WAFs time to resolve
+        response = scraper.get(url, timeout=20)
+        
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             # Extract plain text, limit to 4000 chars to save Gemini tokens
             return soup.get_text(separator=' ', strip=True)[:4000]
         else:
-            print(f"  -> Warning: Received status code {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        print(f"  -> Skipping network read for {url}: {e}")
+            print(f"  -> Warning: Received status code {response.status_code} (Firewall may still be blocking)")
+            
+    except Exception as e:
+        # Simplify the error message output
+        print(f"  -> Failed to reach {url}. Error: {type(e).__name__}")
+        
     return ""
 
 def analyze_jobs_with_ai(raw_html_text, company_name):
     """Uses Gemini to filter text for aviation/logistics roles for the company."""
     if not os.environ.get("GEMINI_API_KEY"):
         print("  -> ERROR: GEMINI_API_KEY environment variable is missing.")
+        return []
+
+    # If the page was mostly blank (common with JavaScript-heavy sites), skip AI
+    if len(raw_html_text) < 50:
+        print("  -> Page text too short. It likely requires JavaScript to load jobs.")
         return []
 
     prompt = f"""
@@ -117,8 +133,9 @@ def main():
     targets = get_target_companies(doc)
     today_stamp = time.strftime("%Y-%m-%d")
     
-    # Process the top 5 companies per run to avoid rate limits
-    for target in targets[:5]:
+    # NOTE: Currently processing the top 10 companies for testing. 
+    # Change `targets[:10]` to `targets` to run all 113 companies.
+    for target in targets[:10]:
         company = target["name"]
         url = target["url"]
         
@@ -126,7 +143,6 @@ def main():
         web_text = scrape_career_site(url)
         
         if not web_text:
-            print("  -> Could not read data from portal. Moving on.")
             continue
             
         found_jobs = analyze_jobs_with_ai(web_text, company)
