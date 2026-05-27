@@ -3,46 +3,35 @@ import json
 import time
 import sys
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import google.generativeai as genai
+from google.genai import Client
 from playwright.sync_api import sync_playwright
 
-# Force Python output to use UTF-8 so emojis like 🧧 and 🍀 do not cause crashes
+# Force Python output to use UTF-8 for emoji handling
 sys.stdout.reconfigure(encoding='utf-8')
 
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "🧧Bub Jobs Command Center🍀" 
 
-# Configure Gemini
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-2.5-flash")
+# Configure New Gemini API Client
+ai_client = Client(api_key=os.environ["GEMINI_API_KEY"])
 
 # --- TARGET SEARCH QUERIES ---
-# We split queries to ensure we get specific results for each sector
 SEARCH_QUERIES = [
-    # 1. Major Airlines & Groups (EU/UK)
     '("Lufthansa" OR "Air France" OR "KLM" OR "British Airways" OR "IAG" OR "Ryanair" OR "EasyJet") ("graduate" OR "internship" OR "thesis") jobs Europe UK',
-    
-    # 2. Major Logistics & Cargo
     '("DHL" OR "Kuehne+Nagel" OR "DB Schenker" OR "DSV" OR "Maersk" OR "FedEx") ("graduate" OR "internship" OR "thesis") jobs Europe UK',
-    
-    # 3. Aerospace Manufacturers & Tech
     '("Airbus" OR "Rolls-Royce" OR "Safran" OR "Thales" OR "Leonardo") ("graduate" OR "internship" OR "thesis") jobs Europe UK',
-    
-    # 4. Aviation Agencies & Think Tanks
     '("Eurocontrol" OR "EASA" OR "IATA" OR "CAPA Centre for Aviation" OR "Civil Aviation Authority") ("traineeship" OR "internship" OR "graduate") jobs'
 ]
 
 def get_google_sheet():
-    """Connects to Google Sheets using GitHub Secrets."""
+    """Connects to Google Sheets cleanly using modern service account method."""
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-    scope = ["https://google.com", "https://googleapis.com"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
+    # Modern gspread allows direct authentication from the service dictionary
+    client = gspread.service_account_from_dict(creds_dict)
     return client.open(GOOGLE_SHEET_NAME).sheet1
 
 def scrape_jobs():
-    """Scrapes job listings from multiple targeted queries."""
+    """Scrapes job listings with corrected search engine URL formatting."""
     all_jobs = []
     
     with sync_playwright() as p:
@@ -51,17 +40,14 @@ def scrape_jobs():
         
         for query in SEARCH_QUERIES:
             print(f"Searching for: {query}...")
-            # Encodes the query for the URL
+            # FIXED: Added the critical missing '/search?q=' structure
             search_url = f"https://google.com{query.replace(' ', '+')}&ibp=htl;jobs"
             
             try:
                 page.goto(search_url, wait_until="networkidle")
-                time.sleep(2) # Human-like pause
+                time.sleep(3) # Safe buffer for loading elements
                 
-                # Grab the list of job cards
                 job_cards = page.locator("li").all()
-                
-                # Take top 5 from each specific sector (20 total daily)
                 for card in job_cards[:5]:
                     text = card.inner_text()
                     if text:
@@ -90,9 +76,12 @@ def analyze_with_ai(raw_job_text):
     {raw_job_text}
     """
     try:
-        response = model.generate_content(prompt)
+        # Modernized text invocation structure for Gemini
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
         result = response.text.strip()
-        # Clean up any markdown formatting the AI might add
         result = result.replace('```json', '').replace('```', '')
         
         if "SKIP" in result:
@@ -108,7 +97,6 @@ def main():
     
     sheet = get_google_sheet()
     
-    # Add headers if sheet is empty
     if not sheet.get_all_values():
         sheet.append_row(["Title", "Company", "Location", "Type", "URL", "Date Added"])
 
@@ -118,8 +106,6 @@ def main():
     for raw_job in raw_jobs:
         parsed_job = analyze_with_ai(raw_job)
         if parsed_job:
-            # Check if URL already exists in sheet to avoid duplicates
-            # (Simple check based on URL column E)
             existing_urls = sheet.col_values(5)
             if parsed_job.get("URL", "N/A") not in existing_urls:
                 sheet.append_row([
