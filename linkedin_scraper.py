@@ -1,7 +1,6 @@
 import os
 import json
 import time
-from datetime import datetime
 import requests
 import gspread
 from langdetect import detect, LangDetectException
@@ -10,21 +9,20 @@ from langdetect import detect, LangDetectException
 GOOGLE_SHEET_NAME = "🧧Bub Jobs Command Center🍀"
 DISCOVERY_TAB = "Discovered Jobs (API)"
 
-# 🛑 🛑 PASTE YOUR EXACT RAPIDAPI URL HERE 🛑 🛑
-# (Copy this from the "Code Snippets" section in your RapidAPI dashboard)
-RAPIDAPI_ENDPOINT_URL = "https://linkedin-job-search-api.p.rapidapi.com/REPLACE_ME_WITH_YOUR_ENDPOINT"
+# The exact, official RapidAPI endpoint for JSearch
+RAPIDAPI_ENDPOINT_URL = "https://jsearch.p.rapidapi.com/search"
 
-# The exact search terms you want to query on LinkedIn
-SEARCH_TERMS = ["Aviation Graduate", "Logistics Trainee", "Supply Chain Graduate"]
+# The Boolean Hack: Combines terms to save massive API credits
+SEARCH_TERM = "Aviation Graduate OR Logistics Trainee OR Supply Chain Graduate"
 
-# Expanded locations! Fantastic.jobs covers all of these.
+# All 10 global locations!
 TARGET_LOCATIONS = [
     "Germany", "United Kingdom", "Singapore", "Australia", 
     "United Arab Emirates", "Qatar", "Japan", "Thailand", 
     "Hong Kong", "China"
 ]
 
-# 🛑 THE BLACKLIST: Keeps the junk out
+# 🛑 THE BLACKLIST
 EXCLUDED_TERMS = [
     "trade", "construction", "labour", "labor", "warehouse", 
     "driver", "operator", "technician", "mechanic", "picker", 
@@ -49,8 +47,8 @@ def apply_sleek_formatting(sheet):
     except Exception:
         pass
 
-def fetch_linkedin_jobs(term, location):
-    """Fetches jobs using the Fantastic.jobs RapidAPI wrapper."""
+def fetch_jsearch_jobs(term, location):
+    """Fetches jobs using the powerful JSearch Google Jobs wrapper."""
     api_key = os.environ.get("RAPIDAPI_KEY")
     api_host = os.environ.get("RAPIDAPI_HOST")
     
@@ -58,10 +56,12 @@ def fetch_linkedin_jobs(term, location):
         print("ERROR: RapidAPI credentials missing!")
         return []
 
-    # FIX: Fantastic.jobs uses specific filters
+    # JSearch specific query formatting
     querystring = {
-        "title_filter": term,
-        "location_filter": location
+        "query": f"{term} in {location}",
+        "page": "1",
+        "num_pages": "1",
+        "date_posted": "week" # Grabs everything from the last 7 days!
     }
 
     headers = {
@@ -69,13 +69,12 @@ def fetch_linkedin_jobs(term, location):
         "X-RapidAPI-Host": api_host
     }
 
-    print(f"  -> Searching LinkedIn via API: '{term}' in '{location}'...")
+    print(f"  -> Searching Global Web via JSearch: '{term}' in '{location}'...")
     try:
-        # Pinging the exact URL you copied from the dashboard
         response = requests.get(RAPIDAPI_ENDPOINT_URL, headers=headers, params=querystring, timeout=15)
         if response.status_code == 200:
             data = response.json()
-            return data.get("data", data) if isinstance(data, dict) else data
+            return data.get("data", []) 
         else:
             print(f"  -> API Error {response.status_code}: {response.text}")
             return []
@@ -102,84 +101,69 @@ def main():
     total_added = 0
     total_blocked = 0
     language_blocked = 0
-    old_jobs_blocked = 0
 
     for location in TARGET_LOCATIONS:
         print(f"\n--- Searching Location: {location.upper()} ---")
-        for term in SEARCH_TERMS:
-            jobs = fetch_linkedin_jobs(term, location)
+        jobs = fetch_jsearch_jobs(SEARCH_TERM, location)
+        
+        if not isinstance(jobs, list):
+            continue
+
+        for job in jobs:
+            # JSearch provides direct application links, or a Google link as a backup
+            job_url = job.get("job_apply_link") or job.get("job_google_link", "")
             
-            # Ensure the API returned a valid list of jobs
-            if not isinstance(jobs, list):
-                continue
-
-            for job in jobs:
-                # Fantastic.jobs maps the URL straight to "url"
-                job_url = job.get("url", "")
+            if job_url and job_url not in existing_links:
                 
-                if job_url and job_url not in existing_links:
-                    
-                    # 1. FRESHNESS FILTER (Local Python Logic)
-                    # Fantastic.jobs provides a timestamp like "2026-05-27T10:00:00Z"
-                    date_posted_str = job.get("date_posted", "")
-                    if date_posted_str:
-                        try:
-                            clean_date = date_posted_str.replace('Z', '+00:00')
-                            job_date = datetime.fromisoformat(clean_date)
-                            # If job is older than 2 days (48 hours), throw it out!
-                            if (datetime.now(job_date.tzinfo) - job_date).days > 2:
-                                old_jobs_blocked += 1
-                                continue
-                        except Exception:
-                            pass 
+                # Map JSearch specific JSON fields
+                title = job.get("job_title", "N/A")
+                description = job.get("job_description", "") 
+                company = job.get("employer_name", "Unknown")
+                
+                # Safely format City and Country
+                city = job.get("job_city", "")
+                country = job.get("job_country", "")
+                job_location = f"{city}, {country}".strip(", ") if city or country else "Unknown"
 
-                    # Map Fantastic.jobs specific JSON fields
-                    title = job.get("title", "N/A")
-                    description = job.get("description_text", "") 
-                    company = job.get("organization", "Unknown")
-                    
-                    locations_array = job.get("locations_derived", [])
-                    job_location = locations_array[0] if isinstance(locations_array, list) and locations_array else "Unknown"
-
-                    # 2. BLACKLIST WORD CHECK
-                    title_lower = title.lower()
-                    if any(bad_word in title_lower for bad_word in EXCLUDED_TERMS):
-                        total_blocked += 1
-                        continue 
-                    
-                    # 3. ENGLISH LANGUAGE CHECK
-                    text_to_check = f"{title} {description}"
-                    try:
-                        if detect(text_to_check) != 'en':
-                            language_blocked += 1
-                            continue
-                    except LangDetectException:
+                # 1. BLACKLIST WORD CHECK
+                title_lower = title.lower()
+                if any(bad_word in title_lower for bad_word in EXCLUDED_TERMS):
+                    total_blocked += 1
+                    continue 
+                
+                # 2. ENGLISH LANGUAGE CHECK
+                text_to_check = f"{title} {description}"
+                try:
+                    if detect(text_to_check) != 'en':
                         language_blocked += 1
                         continue
-                    
-                    rows_to_append.append([
-                        title,
-                        company,
-                        job_location,
-                        "LinkedIn API", 
-                        "Not applied yet",
-                        job_url,
-                        today_stamp
-                    ])
-                    existing_links.add(job_url)
-                    total_added += 1
+                except LangDetectException:
+                    language_blocked += 1
+                    continue
+                
+                rows_to_append.append([
+                    title,
+                    company,
+                    job_location,
+                    "JSearch API", # Tagging so you know where it came from
+                    "Not applied yet",
+                    job_url,
+                    today_stamp
+                ])
+                existing_links.add(job_url)
+                total_added += 1
 
-            # Pause for 2 seconds to avoid hitting RapidAPI's free tier rate limit
-            time.sleep(2)
+        # Pause for 1.5 seconds to respect RapidAPI rate limits
+        time.sleep(1.5)
 
     if rows_to_append:
-        print(f"\nPushing {total_added} new LinkedIn jobs to the Google Sheet...")
+        print(f"\nPushing {total_added} new Global jobs to the Google Sheet...")
         discovery_sheet.append_rows(rows_to_append)
     else:
-        print("\nNo new unique LinkedIn jobs found today.")
+        print("\nNo new unique Global jobs found today.")
         
     print(f"Done! Added {total_added} leads.")
-    print(f"Blocked: {total_blocked} irrelevant | {language_blocked} non-English | {old_jobs_blocked} old jobs.")
+    print(f"Blocked: {total_blocked} irrelevant | {language_blocked} non-English.")
 
 if __name__ == "__main__":
     main()
