@@ -71,7 +71,8 @@ def fetch_jsearch_jobs(term, location):
 
     print(f"  -> Searching Global Web via JSearch: '{term}' in '{location}'...")
     try:
-        response = requests.get(RAPIDAPI_ENDPOINT_URL, headers=headers, params=querystring, timeout=15)
+        # 👇 CHANGED TIMEOUT TO 45 SECONDS HERE 👇
+        response = requests.get(RAPIDAPI_ENDPOINT_URL, headers=headers, params=querystring, timeout=45)
         if response.status_code == 200:
             data = response.json()
             return data.get("data", []) 
