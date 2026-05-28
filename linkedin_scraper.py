@@ -1,6 +1,7 @@
 import os
 import json
 import time
+from datetime import datetime
 import requests
 import gspread
 from langdetect import detect, LangDetectException
@@ -9,10 +10,14 @@ from langdetect import detect, LangDetectException
 GOOGLE_SHEET_NAME = "🧧Bub Jobs Command Center🍀"
 DISCOVERY_TAB = "Discovered Jobs (API)"
 
+# 🛑 🛑 PASTE YOUR EXACT RAPIDAPI URL HERE 🛑 🛑
+# (Copy this from the "Code Snippets" section in your RapidAPI dashboard)
+RAPIDAPI_ENDPOINT_URL = "https://linkedin-job-search-api.p.rapidapi.com/REPLACE_ME_WITH_YOUR_ENDPOINT"
+
 # The exact search terms you want to query on LinkedIn
 SEARCH_TERMS = ["Aviation Graduate", "Logistics Trainee", "Supply Chain Graduate"]
 
-# Expanded locations: Fantastic.jobs supports all of these globally!
+# Expanded locations! Fantastic.jobs covers all of these.
 TARGET_LOCATIONS = [
     "Germany", "United Kingdom", "Singapore", "Australia", 
     "United Arab Emirates", "Qatar", "Japan", "Thailand", 
@@ -53,17 +58,10 @@ def fetch_linkedin_jobs(term, location):
         print("ERROR: RapidAPI credentials missing!")
         return []
 
-    # The Fantastic.jobs endpoint is usually the root path "/"
-    url = f"https://{api_host}/"
-    
-    # Calculate yesterday's date in YYYY-MM-DD format to only get fresh jobs
-    yesterday_stamp = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
-    
-    # Custom parameters specific to the Fantastic.jobs API syntax
+    # FIX: Fantastic.jobs uses specific filters
     querystring = {
         "title_filter": term,
-        "location_filter": location,
-        "date_filter": yesterday_stamp 
+        "location_filter": location
     }
 
     headers = {
@@ -73,10 +71,10 @@ def fetch_linkedin_jobs(term, location):
 
     print(f"  -> Searching LinkedIn via API: '{term}' in '{location}'...")
     try:
-        response = requests.get(url, headers=headers, params=querystring, timeout=15)
+        # Pinging the exact URL you copied from the dashboard
+        response = requests.get(RAPIDAPI_ENDPOINT_URL, headers=headers, params=querystring, timeout=15)
         if response.status_code == 200:
             data = response.json()
-            # Handle list or nested dict safely depending on exact endpoint return
             return data.get("data", data) if isinstance(data, dict) else data
         else:
             print(f"  -> API Error {response.status_code}: {response.text}")
@@ -104,34 +102,52 @@ def main():
     total_added = 0
     total_blocked = 0
     language_blocked = 0
+    old_jobs_blocked = 0
 
     for location in TARGET_LOCATIONS:
         print(f"\n--- Searching Location: {location.upper()} ---")
         for term in SEARCH_TERMS:
             jobs = fetch_linkedin_jobs(term, location)
             
+            # Ensure the API returned a valid list of jobs
+            if not isinstance(jobs, list):
+                continue
+
             for job in jobs:
-                # Catch various URL keys (url, job_url, external_apply_url)
-                job_url = job.get("url", job.get("job_url", job.get("external_apply_url", "")))
+                # Fantastic.jobs maps the URL straight to "url"
+                job_url = job.get("url", "")
                 
                 if job_url and job_url not in existing_links:
+                    
+                    # 1. FRESHNESS FILTER (Local Python Logic)
+                    # Fantastic.jobs provides a timestamp like "2026-05-27T10:00:00Z"
+                    date_posted_str = job.get("date_posted", "")
+                    if date_posted_str:
+                        try:
+                            clean_date = date_posted_str.replace('Z', '+00:00')
+                            job_date = datetime.fromisoformat(clean_date)
+                            # If job is older than 2 days (48 hours), throw it out!
+                            if (datetime.now(job_date.tzinfo) - job_date).days > 2:
+                                old_jobs_blocked += 1
+                                continue
+                        except Exception:
+                            pass 
+
+                    # Map Fantastic.jobs specific JSON fields
                     title = job.get("title", "N/A")
-                    # Fantastic.jobs often provides 'text' for description
-                    description = job.get("description", job.get("text", "")) 
+                    description = job.get("description_text", "") 
+                    company = job.get("organization", "Unknown")
                     
-                    # Company name logic safely handles string or nested dictionary
-                    comp_data = job.get("company", "Unknown")
-                    company = comp_data.get("name", "Unknown") if isinstance(comp_data, dict) else comp_data
-                    
-                    job_location = job.get("location", "Unknown")
-                    
-                    # 1. Blacklist Word Check
+                    locations_array = job.get("locations_derived", [])
+                    job_location = locations_array[0] if isinstance(locations_array, list) and locations_array else "Unknown"
+
+                    # 2. BLACKLIST WORD CHECK
                     title_lower = title.lower()
                     if any(bad_word in title_lower for bad_word in EXCLUDED_TERMS):
                         total_blocked += 1
                         continue 
                     
-                    # 2. English Language Check
+                    # 3. ENGLISH LANGUAGE CHECK
                     text_to_check = f"{title} {description}"
                     try:
                         if detect(text_to_check) != 'en':
@@ -141,7 +157,6 @@ def main():
                         language_blocked += 1
                         continue
                     
-                    # Pass filters -> Add to sheet
                     rows_to_append.append([
                         title,
                         company,
@@ -154,7 +169,7 @@ def main():
                     existing_links.add(job_url)
                     total_added += 1
 
-            # Pause for 2 seconds to avoid hitting RapidAPI's requests-per-second limit
+            # Pause for 2 seconds to avoid hitting RapidAPI's free tier rate limit
             time.sleep(2)
 
     if rows_to_append:
@@ -163,7 +178,8 @@ def main():
     else:
         print("\nNo new unique LinkedIn jobs found today.")
         
-    print(f"Done! Added {total_added} leads. Blocked {total_blocked} irrelevant jobs and {language_blocked} non-English jobs.")
+    print(f"Done! Added {total_added} leads.")
+    print(f"Blocked: {total_blocked} irrelevant | {language_blocked} non-English | {old_jobs_blocked} old jobs.")
 
 if __name__ == "__main__":
     main()
